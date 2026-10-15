@@ -1,5 +1,11 @@
 Changelog
 =========
+Version 0.9.2
+-------------
+* Add EF_HIDNUM / EF_WRITECARD / EF_EMPTYCARD event constants
+* Add HIDEvent, live_capture_hid(), and get_next_hid_card() for RF card taps
+* Refactor realtime packet read so session-id event codes are available
+
 Version 0.9
 -----------
 * Initial Python 3 Support

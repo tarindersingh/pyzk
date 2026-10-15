@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
+import time
 from datetime import datetime
 from socket import AF_INET, SOCK_DGRAM, SOCK_STREAM, socket, timeout
 from struct import pack, unpack
@@ -10,6 +11,7 @@ from .attendance import Attendance
 from .exception import ZKErrorConnection, ZKErrorResponse, ZKNetworkError
 from .user import User
 from .finger import Finger
+from .hid import HIDEvent, parse_hid_card
 
 
 def safe_cast(val, to_type, default=None):
@@ -1312,6 +1314,27 @@ class ZK(object):
         self.verify_user()
         return done
 
+    def _recv_reg_event(self):
+        """
+        Read one realtime packet.
+
+        Returns (event_code, data_bytes). For realtime packets the session-id
+        field carries the event code (see zk-protocol realtime section).
+        """
+        data_recv = self.__sock.recv(1032)
+        self.__ack_ok()
+        if self.tcp:
+            header = unpack('HHHH', data_recv[8:16])
+            data = data_recv[16:]
+        else:
+            header = unpack('<4H', data_recv[:8])
+            data = data_recv[8:]
+        if header[0] != const.CMD_REG_EVENT:
+            if self.verbose:
+                print("not event! %x" % header[0])
+            return None, b''
+        return header[2], data
+
     def live_capture(self, new_timeout=10):
         """
         try live capture of events
@@ -1329,18 +1352,14 @@ class ZK(object):
         while not self.end_live_capture:
             try:
                 if self.verbose: print ("esperando event")
-                data_recv = self.__sock.recv(1032)
-                self.__ack_ok()
-                if self.tcp:
-                    size = unpack('<HHI', data_recv[:8])[2]
-                    header = unpack('HHHH', data_recv[8:16])
-                    data = data_recv[16:]
-                else:
-                    size = len(data_recv)
-                    header = unpack('<4H', data_recv[:8])
-                    data = data_recv[8:]
-                if not header[0] == const.CMD_REG_EVENT:
-                    if self.verbose: print("not event! %x" % header[0])
+                event_code, data = self._recv_reg_event()
+                if event_code is None:
+                    continue
+                # Stock live_capture only registers ATTLOG; still ignore others
+                # if a wider mask is ever used by callers.
+                if event_code and event_code != const.EF_ATTLOG:
+                    if self.verbose:
+                        print("skip event %s" % event_code)
                     continue
                 if not len(data):
                     if self.verbose: print ("empty")
@@ -1374,7 +1393,7 @@ class ZK(object):
                     timestamp = self.__decode_timehex(timehex)
                     tuser = list(filter(lambda x: x.user_id == user_id, users))
                     if not tuser:
-                        uid = int(user_id)
+                        uid = int(user_id) if str(user_id).isdigit() else 0
                     else:
                         uid = tuser[0].uid
                     yield Attendance(user_id, timestamp, status, punch, uid)
@@ -1389,6 +1408,91 @@ class ZK(object):
         self.reg_event(0)
         if not was_enabled:
             self.disable_device()
+
+    def live_capture_hid(self, new_timeout=10):
+        """
+        Yield HIDEvent for each RF/HID card tap (including unknown cards).
+
+        Yields None on socket timeout. Set ``end_live_capture = True`` to stop.
+        Cleanup matches ``live_capture`` so the socket can be reused afterward.
+        """
+        was_enabled = self.is_enabled
+        self.cancel_capture()
+        self.verify_user()
+        if not self.is_enabled:
+            self.enable_device()
+        if self.verbose:
+            print("start live_capture_hid")
+        self.reg_event(const.EF_HIDNUM)
+        self.__sock.settimeout(new_timeout)
+        self.end_live_capture = False
+        while not self.end_live_capture:
+            try:
+                event_code, data = self._recv_reg_event()
+                if event_code is None:
+                    continue
+                # Some firmwares omit / zero the event field when only HID is
+                # registered; accept HID by code or by a plausible 4-byte payload.
+                if event_code and event_code != const.EF_HIDNUM:
+                    if self.verbose:
+                        print("skip event %s" % event_code)
+                    continue
+                card = parse_hid_card(data)
+                if card is None:
+                    if self.verbose:
+                        print("empty hid")
+                    continue
+                yield HIDEvent(card)
+            except timeout:
+                if self.verbose:
+                    print("time out")
+                yield None
+            except (KeyboardInterrupt, SystemExit):
+                if self.verbose:
+                    print("break")
+                break
+        if self.verbose:
+            print("exit live_capture_hid")
+        self.__sock.settimeout(self.__timeout)
+        self.reg_event(0)
+        if not was_enabled:
+            self.disable_device()
+
+    def get_next_hid_card(self, timeout=60):
+        """
+        Wait for a single RF/HID card tap.
+
+        :param timeout: seconds to wait (clamped 5–300)
+        :return: unsigned card number, or None on timeout
+        """
+        timeout = max(5, min(300, int(timeout)))
+        deadline = time.time() + timeout
+        window = min(10, timeout)
+        self.end_live_capture = False
+        gen = self.live_capture_hid(new_timeout=window)
+        card = None
+        try:
+            while time.time() < deadline:
+                try:
+                    event = next(gen)
+                except StopIteration:
+                    break
+                if event is not None:
+                    card = event.card
+                    break
+        finally:
+            # Breaking a generator skips its cleanup; force a clean exit so
+            # reg_event(0) runs and the socket can be reused for commands.
+            self.end_live_capture = True
+            try:
+                next(gen)
+            except StopIteration:
+                pass
+            except Exception:
+                pass
+            finally:
+                gen.close()
+        return card
 
     def clear_data(self):
         """

@@ -3,9 +3,9 @@ from setuptools import setup
 
 setup(
     name='pyzk',
-    version='0.9.1',
+    version='0.9.2',
     description='an unofficial library of zksoftware fingerprint device',
-    url='https://github.com/fananimi/pyzk',
+    url='https://github.com/tarindersingh/pyzk',
     author='Fanani M. Ihsan',
     author_email='fanani.mi@gmail.com',
     license='LICENSE.txt',

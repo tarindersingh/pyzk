@@ -97,6 +97,9 @@ EF_UNLOCK           = (1<<5)# be real-time to unlock
 EF_VERIFY           = (1<<7)# be real-time to verify fingerprint
 EF_FPFTR            = (1<<8)# be real-time capture fingerprint minutia
 EF_ALARM            = (1<<9)# Alarm signal
+EF_HIDNUM           = (1<<10)# RF / HID card number (registered or unknown card tap)
+EF_WRITECARD        = (1<<11)# Write card successfully
+EF_EMPTYCARD        = (1<<12)# Empty / remove card successfully
 
 USER_DEFAULT        = 0
 USER_ENROLLER       = 2
